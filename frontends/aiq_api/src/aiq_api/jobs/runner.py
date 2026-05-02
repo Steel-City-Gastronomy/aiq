@@ -207,6 +207,7 @@ async def run_agent_job(
     parent_conversation_id: str | None = None,
     available_documents: list[dict] | None = None,
     data_sources: list[str] | None = None,
+    collection_name: str | None = None,
 ):
     """
     Dask task to run any registered agent with cancellation support and telemetry.
@@ -234,6 +235,7 @@ async def run_agent_job(
         parent_workflow_trace_id: Parent trace ID (int or hex string) for trace continuity.
         parent_conversation_id: Conversation ID for session grouping in Phoenix.
         available_documents: Optional list of document dicts with file_name and summary.
+        collection_name: Optional knowledge collection name for uploaded documents.
     """
 
     from aiq_agent.common import LLMProvider
@@ -264,6 +266,19 @@ async def run_agent_job(
         agent_class_path,
         agent_config_name,
         job_id,
+    )
+    filenames = [
+        doc.get("file_name")
+        for doc in (available_documents or [])
+        if isinstance(doc, dict) and doc.get("file_name")
+    ]
+    logger.info(
+        "Dask worker RAG metadata: data_sources=%s collection_name=%s "
+        "available_documents_count=%d filenames=%s",
+        data_sources,
+        collection_name,
+        len(filenames),
+        filenames,
     )
 
     try:
@@ -429,14 +444,24 @@ async def run_agent_job(
                 )
 
                 # Run agent - LLM/tool events will be nested under workflow span
-                result = await _run_agent(
-                    agent=agent,
-                    input_text=input_text,
-                    monitor=cancellation_monitor,
-                    available_documents=available_documents,
-                    data_sources=data_sources,
-                    event_store=event_store,
-                )
+                collection_token = None
+                try:
+                    from aiq_agent.knowledge import set_request_collection_name
+
+                    collection_token = set_request_collection_name(collection_name)
+                    result = await _run_agent(
+                        agent=agent,
+                        input_text=input_text,
+                        monitor=cancellation_monitor,
+                        available_documents=available_documents,
+                        data_sources=data_sources,
+                        collection_name=collection_name,
+                        event_store=event_store,
+                    )
+                finally:
+                    from aiq_agent.knowledge import reset_request_collection_name
+
+                    reset_request_collection_name(collection_token)
 
                 # Emit WORKFLOW_END event for Phoenix
                 context.intermediate_step_manager.push_intermediate_step(
@@ -570,6 +595,7 @@ async def _run_agent(
     monitor: CancellationMonitor,
     available_documents: list[dict] | None = None,
     data_sources: list[str] | None = None,
+    collection_name: str | None = None,
     event_store: EventStore | None = None,
 ) -> Any:
     """
@@ -604,6 +630,8 @@ async def _run_agent(
             state_kwargs = {"messages": [HumanMessage(content=input_text)]}
             if data_sources is not None:
                 state_kwargs["data_sources"] = data_sources
+            if collection_name is not None:
+                state_kwargs["collection_name"] = collection_name
             if available_documents:
                 # Convert dicts to AvailableDocument if the state class expects them
                 try:
@@ -623,6 +651,8 @@ async def _run_agent(
             state = {"messages": [HumanMessage(content=input_text)]}
             if data_sources is not None:
                 state["data_sources"] = data_sources
+            if collection_name is not None:
+                state["collection_name"] = collection_name
             if available_documents:
                 state["available_documents"] = available_documents
 

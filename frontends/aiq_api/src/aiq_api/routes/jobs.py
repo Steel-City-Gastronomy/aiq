@@ -82,6 +82,11 @@ class JobSubmitRequest(BaseModel):
         le=604800,
         description="Job expiry in seconds (default from config, max 7 days)",
     )
+    collection_name: str | None = Field(None, description="Optional knowledge collection for uploaded documents")
+    available_documents: list[dict] | None = Field(
+        None, description="Optional uploaded document metadata for knowledge retrieval"
+    )
+    data_sources: list[str] | None = Field(None, description="Optional enabled data source IDs")
 
 
 class JobStatusResponse(BaseModel):
@@ -322,9 +327,24 @@ async def register_job_routes(app: FastAPI, builder: WorkflowBuilder, worker: Fa
             None,  # parent_workflow_run_id
             None,  # parent_workflow_trace_id
             None,  # parent_conversation_id
-            None,  # available_documents
-            None,  # data_sources
+            req.available_documents,
+            req.data_sources,
+            req.collection_name,
         ]
+
+        filenames = [
+            doc.get("file_name")
+            for doc in (req.available_documents or [])
+            if isinstance(doc, dict) and doc.get("file_name")
+        ]
+        logger.info(
+            "Received async job RAG request: data_sources=%s collection_name=%s "
+            "available_documents_count=%d filenames=%s",
+            req.data_sources,
+            req.collection_name,
+            len(filenames),
+            filenames,
+        )
 
         job_id, _ = await job_store.submit_job(
             job_id=resolved_job_id,

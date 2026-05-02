@@ -54,6 +54,7 @@ class DeepResearchAgentState(BaseModel):
         subagents: Status of subagents (planner, researcher) managed by
             SubAgentMiddleware.
         clarifier_result: Log from clarifier agent dialog.
+        collection_name: Knowledge collection name for uploaded document retrieval.
         available_documents: User-uploaded documents with summaries for context.
     """
 
@@ -65,4 +66,5 @@ class DeepResearchAgentState(BaseModel):
     files: Annotated[dict[str, Any], _merge_dict_state] = Field(default_factory=dict)
     subagents: list[dict[str, Any]] = Field(default_factory=list)
     clarifier_result: str | None = None
+    collection_name: str | None = None
     available_documents: list[AvailableDocument] | None = None

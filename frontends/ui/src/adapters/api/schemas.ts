@@ -122,6 +122,15 @@ export const NATUserMessageSchema = z.object({
   timestamp: z.string().optional(),
   /** Optional list of enabled data source IDs to include in the query */
   enabled_data_sources: z.array(z.string()).optional(),
+  /** Optional active knowledge collection name */
+  collection_name: z.string().nullable().optional(),
+  /** Optional uploaded document metadata */
+  available_documents: z.array(
+    z.object({
+      file_name: z.string(),
+      summary: z.string().nullable().optional(),
+    })
+  ).optional(),
 })
 
 /** NAT User Interaction Response - sent when user responds to a prompt */

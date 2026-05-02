@@ -69,6 +69,8 @@ Pass the **rewritten query** to the search tool. This greatly improves result re
 
 ## Research Rules
 - **Loop Prevention**: Max 2 calls per tool. If results are empty, change your search string once or move to synthesis.
+- **Exact value extraction**: When the user asks to copy exact values, preserve them verbatim from tool results. Do not normalize, abbreviate, redact, or drop URLs, IP addresses, model names, filenames, or machine names.
+- **JSON-only requests**: If the user asks for only a JSON object, return valid JSON and nothing else. Preserve exact string values from the source, including full URLs such as `http://...`.
 {% if not ns.has_web %}
 - **Constraints**: **NO WEB ACCESS.**
 {% endif %}

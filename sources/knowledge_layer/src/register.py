@@ -279,9 +279,12 @@ async def knowledge_retrieval(config: KnowledgeRetrievalConfig, _builder: Builde
         """
         # Determine collection: prefer session context (UI) over config default
         try:
+            from aiq_agent.knowledge import get_request_collection_name
+
             ctx = Context.get()
             session_collection = ctx.conversation_id if ctx else None
-            target_collection = session_collection or collection
+            request_collection = get_request_collection_name()
+            target_collection = request_collection or session_collection or collection
         except Exception:
             target_collection = collection
 

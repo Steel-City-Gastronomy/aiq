@@ -44,6 +44,7 @@ class ChatResearcherState(BaseModel):
         shallow_result: Result from shallow research (if executed).
         clarifier_result: Log from clarifier agent dialog.
         original_query: The latest user query, preserved for deep research.
+        collection_name: Knowledge collection name for uploaded document retrieval.
         available_documents: User-uploaded documents with summaries for context.
     """
 
@@ -56,4 +57,5 @@ class ChatResearcherState(BaseModel):
     shallow_result: ShallowResult | None = None
     clarifier_result: str | None = None
     original_query: str | None = None
+    collection_name: str | None = None
     available_documents: list[AvailableDocument] | None = None

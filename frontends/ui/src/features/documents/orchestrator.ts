@@ -123,8 +123,9 @@ class UploadOrchestratorImpl {
    * (from a previous upload) or has a persisted job in progress.
    * This prevents unnecessary 404 errors for sessions that never had files uploaded.
    */
-  async loadFilesForSession(sessionId: string): Promise<void> {
+  async loadFilesForSession(sessionId: string, options: { force?: boolean } = {}): Promise<void> {
     const store = this.getStore()
+    const force = options.force ?? false
 
     // Skip if Knowledge Layer is not available (prevents 404 errors when backend
     // doesn't have knowledge_retrieval configured)
@@ -134,18 +135,18 @@ class UploadOrchestratorImpl {
       return
     }
 
-    if (sessionId === this.lastLoadedSessionId) {
+    if (!force && sessionId === this.lastLoadedSessionId) {
       store.setLoadingFiles(false)
       return
     }
 
-    if (store.isUploading || store.isPolling) {
+    if (!force && (store.isUploading || store.isPolling)) {
       store.setLoadingFiles(false)
       return
     }
 
     // Check if session changed before making network request
-    if (sessionId !== this.currentSessionId) {
+    if (!force && sessionId !== this.currentSessionId) {
       store.setLoadingFiles(false)
       return
     }
@@ -367,10 +368,10 @@ class UploadOrchestratorImpl {
           this.callbacks.onError?.(new Error(status.error_message))
         }
 
-        // Reload files from server (setFilesFromServer replaces files for the
-        // collection while preserving client-side metadata like uploadedAt)
+        // Reload files from server (setFilesFromServer replaces stale transient
+        // upload cards with authoritative backend statuses like success)
         this.lastLoadedSessionId = null
-        this.loadFilesForSession(collectionName)
+        await this.loadFilesForSession(collectionName, { force: true })
         return
       }
 

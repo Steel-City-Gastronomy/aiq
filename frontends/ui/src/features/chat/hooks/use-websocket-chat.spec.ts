@@ -280,8 +280,8 @@ describe('useWebSocketChat', () => {
       result.current.sendMessage('Hello')
     })
 
-    // sendMessage is called with content and enabled data sources
-    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', expect.any(Array))
+    // sendMessage is called with content, enabled data sources, and optional RAG metadata
+    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', expect.any(Array), undefined)
     expect(mockSetLoading).toHaveBeenCalledWith(false)
   })
 
@@ -299,6 +299,7 @@ describe('useWebSocketChat', () => {
     const mockDocumentsStore = await import('@/features/documents/store')
     vi.mocked(mockDocumentsStore.useDocumentsStore.getState).mockReturnValue({
       trackedFiles: [],
+      currentCollectionName: null,
     } as unknown as ReturnType<typeof mockDocumentsStore.useDocumentsStore.getState>)
 
     const { result } = renderWebSocketHook()
@@ -308,7 +309,7 @@ describe('useWebSocketChat', () => {
     })
 
     // knowledge_layer should NOT be added since no files exist
-    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web', 'docs'])
+    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web', 'docs'], undefined)
   })
 
   test('sendMessage adds knowledge_layer when files are uploaded', async () => {
@@ -324,6 +325,7 @@ describe('useWebSocketChat', () => {
     // Mock documents store with files for this session (status: success)
     const mockDocumentsStore = await import('@/features/documents/store')
     vi.mocked(mockDocumentsStore.useDocumentsStore.getState).mockReturnValue({
+      currentCollectionName: 'conv-1',
       trackedFiles: [
         { id: 'file-1', fileName: 'test.pdf', collectionName: 'conv-1', status: 'success', fileSize: 1000 },
       ],
@@ -336,10 +338,50 @@ describe('useWebSocketChat', () => {
     })
 
     // knowledge_layer should be ADDED since files exist for this session
-    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web', 'docs', 'knowledge_layer'])
+    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web', 'docs', 'knowledge_layer'], {
+      collection_name: 'conv-1',
+      available_documents: [{ file_name: 'test.pdf', summary: null }],
+    })
   })
 
-  test('sendMessage adds knowledge_layer when files are ingesting', async () => {
+  test('sendMessage uses unique ready file collection when current collection is missing', async () => {
+    mockWsClient.isConnected.mockReturnValue(true)
+
+    const mockLayoutStore = await import('@/features/layout/store')
+    vi.mocked(mockLayoutStore.useLayoutStore.getState).mockReturnValue({
+      enabledDataSourceIds: ['web_search'],
+      knowledgeLayerAvailable: true,
+    } as ReturnType<typeof mockLayoutStore.useLayoutStore.getState>)
+
+    const mockDocumentsStore = await import('@/features/documents/store')
+    vi.mocked(mockDocumentsStore.useDocumentsStore.getState).mockReturnValue({
+      currentCollectionName: null,
+      collectionInfo: null,
+      loadedSessionId: null,
+      trackedFiles: [
+        {
+          id: 'file-1',
+          fileName: 'aiq_rag_test.md',
+          collectionName: 's_ready_collection',
+          status: 'success',
+          fileSize: 1000,
+        },
+      ],
+    } as ReturnType<typeof mockDocumentsStore.useDocumentsStore.getState>)
+
+    const { result } = renderWebSocketHook()
+
+    act(() => {
+      result.current.sendMessage('Hello')
+    })
+
+    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web_search', 'knowledge_layer'], {
+      collection_name: 's_ready_collection',
+      available_documents: [{ file_name: 'aiq_rag_test.md', summary: null }],
+    })
+  })
+
+  test('sendMessage does not add knowledge_layer when files are still ingesting', async () => {
     mockWsClient.isConnected.mockReturnValue(true)
 
     // Mock layout store without knowledge_layer (it's filtered out by API client)
@@ -352,6 +394,7 @@ describe('useWebSocketChat', () => {
     // Mock documents store with files in ingesting state
     const mockDocumentsStore = await import('@/features/documents/store')
     vi.mocked(mockDocumentsStore.useDocumentsStore.getState).mockReturnValue({
+      currentCollectionName: 'conv-1',
       trackedFiles: [
         { id: 'file-1', fileName: 'test.pdf', collectionName: 'conv-1', status: 'ingesting', fileSize: 1000 },
       ],
@@ -363,8 +406,8 @@ describe('useWebSocketChat', () => {
       result.current.sendMessage('Hello')
     })
 
-    // knowledge_layer should be ADDED since files are being ingested
-    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web', 'knowledge_layer'])
+    // knowledge_layer should wait until ingestion succeeds
+    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web'], undefined)
   })
 
   test('sendMessage does not add knowledge_layer when knowledgeLayerAvailable is false', async () => {
@@ -380,6 +423,7 @@ describe('useWebSocketChat', () => {
     // Mock documents store with files (but knowledge layer not available)
     const mockDocumentsStore = await import('@/features/documents/store')
     vi.mocked(mockDocumentsStore.useDocumentsStore.getState).mockReturnValue({
+      currentCollectionName: 'conv-1',
       trackedFiles: [
         { id: 'file-1', fileName: 'test.pdf', collectionName: 'conv-1', status: 'success', fileSize: 1000 },
       ],
@@ -392,7 +436,7 @@ describe('useWebSocketChat', () => {
     })
 
     // knowledge_layer should NOT be added even with files if knowledgeLayerAvailable is false
-    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web', 'docs'])
+    expect(mockWsClient.sendMessage).toHaveBeenCalledWith('Hello', ['web', 'docs'], undefined)
   })
 
   test('sendMessage sets error when WebSocket not connected and no conversation', () => {

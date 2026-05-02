@@ -205,16 +205,18 @@ export const useDocumentsStore = create<DocumentsStore>()(
             )
 
             // Separate client-side transient files that the server doesn't know
-            // about yet. These must survive the replace so the UI keeps showing
-            // upload progress cards and pending deletes.
+            // about yet. If the server now returns the file, the server status
+            // is authoritative and should replace stale uploading/ingesting cards.
             const serverFileIds = new Set(files.map((f) => f.file_id))
+            const serverFileNames = new Set(files.map((f) => f.file_name))
             const transientStatuses = new Set(['uploading', 'ingesting', 'deleting'])
             const preservedFiles = state.trackedFiles.filter(
               (f) =>
                 f.collectionName === collectionName &&
                 transientStatuses.has(f.status) &&
                 !serverFileIds.has(f.serverFileId ?? '') &&
-                !serverFileIds.has(f.id)
+                !serverFileIds.has(f.id) &&
+                !serverFileNames.has(f.fileName)
             )
 
             // Remove existing files for this collection (except transient ones kept above)

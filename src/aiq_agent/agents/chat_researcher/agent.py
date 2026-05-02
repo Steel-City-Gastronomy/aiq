@@ -195,6 +195,7 @@ class ChatResearcherAgent:
                     messages=trimmed_messages,
                     data_sources=state.data_sources,
                     available_documents=state.available_documents,
+                    collection_name=state.collection_name,
                 )
                 result = await self.shallow_research_fn(shallow_state)
             except EmptySourceRegistryError:
@@ -263,6 +264,7 @@ class ChatResearcherAgent:
                 messages=trimmed_messages + [HumanMessage(content=research_query)],
                 data_sources=state.data_sources,
                 clarifier_result=state.clarifier_result,
+                collection_name=state.collection_name,
                 available_documents=state.available_documents,
             )
             try:

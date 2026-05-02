@@ -31,6 +31,8 @@ Configuration:
 import logging
 import os
 from collections.abc import Callable
+from contextvars import ContextVar
+from contextvars import Token
 from typing import TYPE_CHECKING
 from typing import Any
 
@@ -84,6 +86,27 @@ _INGESTOR_INSTANCES: dict[str, BaseIngestor] = {}
 
 # Active ingestor for the Knowledge API (set by knowledge_retrieval function)
 _ACTIVE_INGESTOR: BaseIngestor | None = None
+
+# Request-scoped collection override for chat/browser RAG retrieval.
+_REQUEST_COLLECTION_NAME: ContextVar[str | None] = ContextVar("aiq_request_collection_name", default=None)
+
+
+def set_request_collection_name(collection_name: str | None) -> Token[str | None] | None:
+    """Set the active knowledge collection for the current async request."""
+    if not collection_name:
+        return None
+    return _REQUEST_COLLECTION_NAME.set(collection_name)
+
+
+def reset_request_collection_name(token: Token[str | None] | None) -> None:
+    """Reset the request-scoped knowledge collection override."""
+    if token is not None:
+        _REQUEST_COLLECTION_NAME.reset(token)
+
+
+def get_request_collection_name() -> str | None:
+    """Return the request-scoped knowledge collection override, if set."""
+    return _REQUEST_COLLECTION_NAME.get()
 
 
 def register_retriever(name: str) -> Callable[[type[BaseRetriever]], type[BaseRetriever]]:

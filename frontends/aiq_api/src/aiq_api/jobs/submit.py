@@ -91,6 +91,7 @@ async def submit_agent_job(
     expiry_seconds: int = 86400,
     available_documents: list[dict] | None = None,
     data_sources: list[str] | None = None,
+    collection_name: str | None = None,
 ) -> str:
     """
     Submit an agent job to the Dask cluster.
@@ -106,6 +107,7 @@ async def submit_agent_job(
         expiry_seconds: Job expiry time in seconds (default 24h).
         available_documents: Optional list of document dicts with file_name and summary.
         data_sources: Optional list of allowed data sources to enforce in the worker.
+        collection_name: Optional knowledge collection name for uploaded documents.
 
     Returns:
         The job ID.
@@ -188,7 +190,24 @@ async def submit_agent_job(
             *_get_parent_trace_context(),
             available_documents,
             data_sources,
+            collection_name,
         ],
+    )
+
+    filenames = [
+        doc.get("file_name")
+        for doc in (available_documents or [])
+        if isinstance(doc, dict) and doc.get("file_name")
+    ]
+    logger.info(
+        "Submitted %s job %s RAG metadata: data_sources=%s collection_name=%s "
+        "available_documents_count=%d filenames=%s",
+        agent_type,
+        resolved_job_id,
+        data_sources,
+        collection_name,
+        len(filenames),
+        filenames,
     )
 
     logger.info(

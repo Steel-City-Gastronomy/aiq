@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections.abc import Sequence
@@ -48,6 +49,18 @@ from ...common import LLMRole
 from .models import ShallowResearchAgentState
 
 logger = logging.getLogger(__name__)
+
+
+def _is_json_object_response(content: str) -> bool:
+    """Return True when the final answer is a JSON object and nothing else."""
+    stripped = content.strip()
+    if not stripped.startswith("{") or not stripped.endswith("}"):
+        return False
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict)
 
 
 # Path to this agent's directory (for loading prompts)
@@ -300,23 +313,26 @@ class ShallowResearcherAgent:
             if hasattr(last_msg, "content") and last_msg.content:
                 content = str(last_msg.content)
 
-                # Step 1: verify citations against registry
-                if registry.all_sources():
-                    verification = verify_citations(content, registry)
-                    logger.debug(
-                        "Shallow researcher: citation verification complete — "
-                        "%d valid, %d removed, %d sources in registry",
-                        len(verification.valid_citations),
-                        len(verification.removed_citations),
-                        len(registry.all_sources()),
-                    )
-                    content = verification.verified_report
+                if _is_json_object_response(content):
+                    logger.info("Shallow researcher: preserving JSON-only response without report sanitization")
                 else:
-                    raise EmptySourceRegistryError("shallow research")
+                    # Step 1: verify citations against registry
+                    if registry.all_sources():
+                        verification = verify_citations(content, registry)
+                        logger.debug(
+                            "Shallow researcher: citation verification complete — "
+                            "%d valid, %d removed, %d sources in registry",
+                            len(verification.valid_citations),
+                            len(verification.removed_citations),
+                            len(registry.all_sources()),
+                        )
+                        content = verification.verified_report
+                    else:
+                        raise EmptySourceRegistryError("shallow research")
 
-                # Step 2: sanitize report (strip body URLs, shortened URLs, unsafe URLs)
-                sanitization = sanitize_report(content)
-                content = sanitization.sanitized_report
+                    # Step 2: sanitize report (strip body URLs, shortened URLs, unsafe URLs)
+                    sanitization = sanitize_report(content)
+                    content = sanitization.sanitized_report
 
                 # Emit verified/sanitized report so the frontend shows the
                 # cleaned version (overwrites the raw draft auto-emitted

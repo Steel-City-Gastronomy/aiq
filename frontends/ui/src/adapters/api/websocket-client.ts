@@ -60,6 +60,18 @@ export interface NATWebSocketClientOptions {
   websocketUrl?: string
 }
 
+/** Document metadata included with a chat request for knowledge-layer retrieval. */
+export interface NATChatDocumentMetadata {
+  file_name: string
+  summary?: string | null
+}
+
+/** Optional chat request metadata carried inside the NAT text payload. */
+export interface NATChatRequestMetadata {
+  collection_name?: string | null
+  available_documents?: NATChatDocumentMetadata[]
+}
+
 /**
  * NAT WebSocket client for AI-Q backend communication.
  * Supports full human-in-the-loop (HITL) features including
@@ -131,12 +143,19 @@ export class NATWebSocketClient {
    * Send a user chat message
    * @param content - The message text content (query)
    * @param enabledDataSources - Optional array of enabled data source IDs to include in the query
+   * @param metadata - Optional knowledge-layer metadata for uploaded documents
    */
-  sendMessage = (content: string, enabledDataSources?: string[]): void => {
-    // Format the text content as JSON with query and data_sources
+  sendMessage = (
+    content: string,
+    enabledDataSources?: string[],
+    metadata?: NATChatRequestMetadata
+  ): void => {
+    // Format the text content as JSON with query, data_sources, and optional document metadata.
     const textContent = JSON.stringify({
       query: content,
       data_sources: enabledDataSources ?? [],
+      ...(metadata?.collection_name ? { collection_name: metadata.collection_name } : {}),
+      ...(metadata?.available_documents ? { available_documents: metadata.available_documents } : {}),
     })
 
     const messageId = this.generateMessageId()

@@ -35,6 +35,7 @@ import { useChatStore } from '../store'
 import { useConnectionRecovery } from './use-connection-recovery'
 import { useLayoutStore } from '@/features/layout/store'
 import { useDocumentsStore } from '@/features/documents/store'
+import type { DocumentsState, TrackedFile } from '@/features/documents/types'
 import { useAuth } from '@/adapters/auth'
 import type {
   Conversation,
@@ -52,6 +53,32 @@ import {
   isFunctionStepName,
   formatPayload,
 } from '../lib/intermediate-step-parser'
+
+const READY_FILE_STATUSES = new Set<TrackedFile['status']>(['success'])
+
+const getUniqueCollectionName = (files: TrackedFile[]): string | null => {
+  const collectionNames = Array.from(
+    new Set(files.map((file) => file.collectionName).filter((name): name is string => Boolean(name)))
+  )
+  return collectionNames.length === 1 ? collectionNames[0] : null
+}
+
+const resolveActiveDocumentCollection = (
+  documentsState: DocumentsState,
+  sessionId: string | undefined
+): string | null => {
+  const readyFiles = documentsState.trackedFiles.filter((file) => READY_FILE_STATUSES.has(file.status))
+
+  return (
+    documentsState.currentCollectionName ||
+    documentsState.collectionInfo?.name ||
+    getUniqueCollectionName(readyFiles) ||
+    getUniqueCollectionName(documentsState.trackedFiles) ||
+    documentsState.loadedSessionId ||
+    sessionId ||
+    null
+  )
+}
 
 /**
  * Map NAT/backend error codes to frontend ErrorCode for consistent UI display.
@@ -588,25 +615,57 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
 
       // Get session files
       const sessionId = useChatStore.getState().currentConversation?.id
-      const trackedFiles = useDocumentsStore.getState().trackedFiles
-      const sessionFiles = sessionId
-        ? trackedFiles.filter(
-            (f) => f.collectionName === sessionId && (f.status === 'ingesting' || f.status === 'success')
+      const documentsState = useDocumentsStore.getState()
+      const activeCollectionName = resolveActiveDocumentCollection(documentsState, sessionId)
+      const sessionFiles = activeCollectionName
+        ? documentsState.trackedFiles.filter((f) => f.collectionName === activeCollectionName)
+        : []
+      const readySessionFiles = activeCollectionName
+        ? documentsState.trackedFiles.filter(
+            (f) => f.collectionName === activeCollectionName && READY_FILE_STATUSES.has(f.status)
           )
         : []
 
-      const hasSessionFiles = sessionFiles.length > 0
+      const hasReadySessionFiles = readySessionFiles.length > 0
 
-      // Add knowledge_layer to data sources if files exist
-      const dataSourcesForMessage = hasSessionFiles && layoutState.knowledgeLayerAvailable
-        ? [...enabledDataSources, 'knowledge_layer']
-        : enabledDataSources
+      // Add knowledge_layer to data sources if ingested files are ready.
+      const dataSourcesForMessage =
+        hasReadySessionFiles && layoutState.knowledgeLayerAvailable
+          ? Array.from(new Set([...enabledDataSources, 'knowledge_layer']))
+          : enabledDataSources
 
       // Prepare file metadata for display
       const messageFiles = sessionFiles.map((f) => ({
         id: f.id,
         fileName: f.fileName,
       }))
+
+      const requestMetadata =
+        hasReadySessionFiles && layoutState.knowledgeLayerAvailable && activeCollectionName
+          ? {
+              collection_name: activeCollectionName,
+              available_documents: readySessionFiles.map((f) => ({
+                file_name: f.fileName,
+                summary: null,
+              })),
+            }
+          : undefined
+
+      console.debug('[AIQ RAG send]', {
+        currentCollectionName: documentsState.currentCollectionName,
+        loadedSessionId: documentsState.loadedSessionId,
+        collectionInfo: documentsState.collectionInfo,
+        trackedFiles: documentsState.trackedFiles.map((file) => ({
+          fileName: file.fileName,
+          status: file.status,
+          collectionName: file.collectionName,
+          serverFileId: file.serverFileId,
+          jobId: file.jobId,
+        })),
+        finalDataSources: dataSourcesForMessage,
+        finalCollectionName: requestMetadata?.collection_name ?? null,
+        finalAvailableDocuments: requestMetadata?.available_documents ?? [],
+      })
 
       // Add user message to store with metadata
       addUserMessage(content, {
@@ -635,7 +694,7 @@ export const useWebSocketChat = (options: UseWebSocketChatOptions = {}): UseWebS
       // Helper to actually send the message
       const doSend = () => {
         if (wsClientRef.current?.isConnected()) {
-          wsClientRef.current.sendMessage(content, dataSourcesForMessage)
+          wsClientRef.current.sendMessage(content, dataSourcesForMessage, requestMetadata)
           setLoading(false)
         } else {
           addErrorCard('connection.failed', 'WebSocket connection failed')

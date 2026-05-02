@@ -45,7 +45,7 @@ from nat.data_models.component_ref import LLMRef
 from nat.data_models.function import FunctionBaseConfig
 
 from .models import ChatResearcherState
-from .utils import _extract_query_and_sources
+from .utils import _extract_query_context
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +258,7 @@ async def chat_deepresearcher_agent(config: ChatDeepResearcherConfig, builder: B
                     owner=owner,
                     available_documents=available_docs,
                     data_sources=state.data_sources,
+                    collection_name=state.collection_name,
                 )
 
             deep_research_job_submitter = _submit_deep_job
@@ -327,49 +328,86 @@ async def chat_deepresearcher_agent(config: ChatDeepResearcherConfig, builder: B
                 "email": user_info.email,
             }
 
-        query_text, data_sources = _extract_query_and_sources(query)
+        query_text, data_sources, collection_name, payload_available_documents = _extract_query_context(query)
         logger.info("ChatDeepResearcherAgent: %s", query_text)
         logger.info("ChatDeepResearcherAgent: Data sources: %s", data_sources)
+        payload_filenames = [
+            doc.get("file_name")
+            for doc in (payload_available_documents or [])
+            if isinstance(doc, dict) and doc.get("file_name")
+        ]
+        logger.info(
+            "ChatDeepResearcherAgent RAG request: data_sources=%s collection_name=%s "
+            "available_documents_count=%d filenames=%s",
+            data_sources,
+            collection_name,
+            len(payload_filenames),
+            payload_filenames,
+        )
 
         # Fetch available documents with summaries from SQLite registry
         # The registry is populated by backends during ingestion (backend-agnostic)
         available_documents = None
-        try:
-            from aiq_agent.knowledge import get_available_documents_async
+        if payload_available_documents:
+            try:
+                from aiq_agent.knowledge import AvailableDocument
 
-            # Get collection from session context (conversation_id = collection_name)
-            collection_name = Context.get().conversation_id if Context.get() else None
+                available_documents = [AvailableDocument(**doc) for doc in payload_available_documents]
+                logger.info(
+                    "Using %d available documents from chat payload for collection %s",
+                    len(available_documents),
+                    collection_name,
+                )
+            except Exception as e:
+                logger.warning("Could not parse available documents from chat payload: %s", e)
 
-            if collection_name:
-                available_documents = await get_available_documents_async(collection_name)
-                if available_documents:
-                    logger.info(
-                        "Loaded %d document summaries from DB for collection %s",
-                        len(available_documents),
-                        collection_name,
-                    )
-                    for doc in available_documents:
-                        logger.debug("  [summary] [file]: %s", "available" if doc.summary else "none")
+        if available_documents is None:
+            try:
+                from aiq_agent.knowledge import get_available_documents_async
+
+                # Prefer explicit browser collection; fall back to NAT conversation context.
+                summary_collection_name = collection_name
+                if not summary_collection_name:
+                    summary_collection_name = Context.get().conversation_id if Context.get() else None
+
+                if summary_collection_name:
+                    available_documents = await get_available_documents_async(summary_collection_name)
+                    if available_documents:
+                        logger.info(
+                            "Loaded %d document summaries from DB for collection %s",
+                            len(available_documents),
+                            summary_collection_name,
+                        )
+                        for doc in available_documents:
+                            logger.debug("  [summary] [file]: %s", "available" if doc.summary else "none")
+                    else:
+                        logger.info("No document summaries in DB for collection %s", summary_collection_name)
                 else:
-                    logger.info("No document summaries in DB for collection %s", collection_name)
-            else:
-                logger.debug("No session context - cannot determine collection")
-        except Exception as e:
-            logger.warning("Could not fetch available documents: %s", e)
+                    logger.debug("No session context - cannot determine collection")
+            except Exception as e:
+                logger.warning("Could not fetch available documents: %s", e)
         # Set session-scoped source registry for citation verification across turns.
         # When no conversation ID is available, get_or_create_session_registry returns a
         # fresh per-request registry to prevent anonymous sessions from sharing state.
         session_registry = get_or_create_session_registry(nat_context_conversation_id)
         token = set_session_registry(session_registry)
+        collection_token = None
         try:
+            from aiq_agent.knowledge import set_request_collection_name
+
+            collection_token = set_request_collection_name(collection_name)
             state = ChatResearcherState(
                 messages=[HumanMessage(content=query_text)],
                 user_info=user_info_dict,
                 data_sources=data_sources,
+                collection_name=collection_name,
                 available_documents=available_documents,
             )
             result = await agent.run(state, thread_id=nat_context_conversation_id)
         finally:
+            from aiq_agent.knowledge import reset_request_collection_name
+
+            reset_request_collection_name(collection_token)
             reset_session_registry(token)
 
         if isinstance(result, dict):

@@ -45,11 +45,14 @@ from .factory import get_active_ingestor
 from .factory import get_available_documents
 from .factory import get_available_documents_async
 from .factory import get_ingestor
+from .factory import get_request_collection_name
 from .factory import get_retriever
 from .factory import register_ingestor
 from .factory import register_retriever
 from .factory import register_summary
+from .factory import reset_request_collection_name
 from .factory import set_active_ingestor
+from .factory import set_request_collection_name
 from .factory import unregister_summary
 from .schema import AvailableDocument
 from .schema import Chunk
@@ -74,6 +77,7 @@ __all__ = [
     # Factory
     "get_retriever",
     "get_ingestor",
+    "get_request_collection_name",
     "register_retriever",
     "register_ingestor",
     # Active ingestor (for Knowledge API)
@@ -83,6 +87,8 @@ __all__ = [
     # Summary Registry (SQLAlchemy-backed, backend-agnostic)
     "configure_summary_db",
     "register_summary",
+    "reset_request_collection_name",
+    "set_request_collection_name",
     "unregister_summary",
     "get_available_documents",
     "get_available_documents_async",
