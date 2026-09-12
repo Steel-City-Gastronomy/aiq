@@ -1,0 +1,184 @@
+# Web mode, LOCAL Lightning lane — migrated to the AI-Q v2.2.1 / NAT 1.8.0 schema (2026-08-27).
+#
+# WHAT CHANGED AND WHY
+# v2.2.1 introduced `data_source_registry`. Agents no longer carry their own `tools:` list; they
+# INHERIT every tool in the registry and narrow it with `exclude_tools:`. Passing `tools:` to an agent
+# is what produced `ValueError: Invalid configuration: functions: Extra inputs are not permitted`
+# on the 2.0.0-era config.
+#
+# WHAT IS DELIBERATELY PRESERVED FROM SCG's CONFIG (do not "fix" these to match upstream):
+#   * `_type: openai` against ${LOCAL_VLLM_BASE_URL} — this lane runs on the LOCAL Spark
+#     (Nemotron 3.5 Lightning on spark-e60f), NOT NVIDIA's hosted catalog. Upstream's reference uses
+#     `_type: nim` against integrate.api.nvidia.com; adopting that would move this host off local
+#     inference entirely.
+#   * `enable_clarifier: false` — SCG 2026-08-02. The clarifier asks the USER a question; in a
+#     headless/API deployment there is no human callback registered, so it raises NotImplementedError
+#     and the whole /chat request 500s. Correct for interactive UI use, fatal for programmatic use.
+#     Upstream's default is `true`.
+#   * Lightning everywhere rather than Ultra 550B. A model swap voids every behavioural baseline (G7).
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: INFO
+
+  front_end:
+    _type: aiq_api
+    runner_class: aiq_api.plugin.AIQAPIWorker
+    db_url: ${NAT_JOB_STORE_DB_URL:-sqlite+aiosqlite:///./jobs.db}
+    expiry_seconds: 86400
+    cors:
+      allow_origin_regex: 'http://localhost(:\d+)?|http://127.0.0.1(:\d+)?'
+      allow_methods:
+        - GET
+        - POST
+        - DELETE
+        - OPTIONS
+      allow_headers:
+        - "*"
+      allow_credentials: true
+      expose_headers:
+        - "*"
+
+llms:
+  nemotron_llm_intent:
+    _type: openai
+    api_key: "EMPTY"
+    base_url: "http://host.docker.internal:18000/v1"  # SCG 2026-09-06: was ${LOCAL_VLLM_BASE_URL} = the dead Tailscale address; this is com.scg.e60f-lightning-tunnel (launchd), the same tunnel Switchyard rides. deploy/.env carries the same value for the next recreate.
+    model_name: "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+    temperature: 0.2
+    top_p: 0.9
+    max_tokens: 4096
+
+  nemotron_nano_llm:
+    _type: openai
+    api_key: "EMPTY"
+    base_url: "http://host.docker.internal:18000/v1"  # SCG 2026-09-06: was ${LOCAL_VLLM_BASE_URL} = the dead Tailscale address; this is com.scg.e60f-lightning-tunnel (launchd), the same tunnel Switchyard rides. deploy/.env carries the same value for the next recreate.
+    model_name: "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+    temperature: 0.2
+    top_p: 0.9
+    max_tokens: 32768
+
+  gpt_oss_llm:
+    _type: openai
+    api_key: "EMPTY"
+    base_url: "http://host.docker.internal:18000/v1"  # SCG 2026-09-06: was ${LOCAL_VLLM_BASE_URL} = the dead Tailscale address; this is com.scg.e60f-lightning-tunnel (launchd), the same tunnel Switchyard rides. deploy/.env carries the same value for the next recreate.
+    model_name: "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+    temperature: 0.3
+    top_p: 0.9
+    max_tokens: 32768
+
+  summary_llm:
+    _type: openai
+    api_key: "EMPTY"
+    base_url: "http://host.docker.internal:18000/v1"  # SCG 2026-09-06: was ${LOCAL_VLLM_BASE_URL} = the dead Tailscale address; this is com.scg.e60f-lightning-tunnel (launchd), the same tunnel Switchyard rides. deploy/.env carries the same value for the next recreate.
+    model_name: "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+    temperature: 0.2
+    top_p: 0.9
+    max_tokens: 4096
+
+functions:
+  # NEW IN v2.2.1 — the registry agents inherit their tools from.
+  data_sources:
+    _type: data_source_registry
+    sources:
+      # SCG 2026-09-06 (v2.3 /chat fix, plan item D): the verified ledger is ranked FIRST and the
+      # descriptions say why. Before this, web_search was listed first with a generic description,
+      # and /chat answered a Fresco stock question from a 2016 blog ("35 bars, 19 units") while
+      # finding 118 in this very collection held the measured answer (qty 1 and 16). Source order
+      # is what the agents inherit; the description is what the model reads when it chooses.
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Steel City Gastronomy's VERIFIED knowledge base: the findings ledger (numbered, dated, sourced rows), the Kellogg and Decoded lenses, locked decisions and the current marketing plan. AUTHORITATIVE for anything about SCG, its competitors, prices, stock levels, channels, regulations and prior research. ALWAYS search here FIRST and cite finding IDs. Go to the web only for what this base does not contain."
+        tools:
+          - knowledge_search
+      - id: web_search
+        name: "Web Search"
+        description: "Search the web for real-time information that is NOT in the Knowledge Base. Use only after a Knowledge Base search returns nothing relevant. Web results are unverified: say so, and never let them override a Knowledge Base finding."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+      - id: paper_search
+        name: "Academic Papers"
+        description: "Search academic papers and scientific publications."
+        tools:
+          - paper_search_tool
+
+  web_search_tool:
+    _type: tavily_web_search
+    max_results: 5
+    max_content_length: 1000
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 2
+    advanced_search: true
+
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: llamaindex
+    collection_name: ${COLLECTION_NAME:-test_collection}
+    generate_summary: true
+    summary_model: summary_llm
+    summary_db: ${AIQ_SUMMARY_DB:-sqlite+aiosqlite:///./summaries.db}
+    top_k: 5
+    chroma_dir: ${AIQ_CHROMA_DIR:-/tmp/chroma_data}
+
+  paper_search_tool:
+    _type: paper_search
+    max_results: 5
+    serper_api_key: ${SERPER_API_KEY}
+
+  # Agents: no `tools:` lists — they inherit from data_sources and narrow with exclude_tools.
+  intent_classifier:
+    _type: intent_classifier
+    llm: nemotron_llm_intent
+    verbose: true
+
+  clarifier_agent:
+    _type: clarifier_agent
+    llm: nemotron_nano_llm
+    max_turns: 3
+    log_response_max_chars: 2000
+    verbose: true
+
+  shallow_research_agent:
+    _type: shallow_research_agent
+    llm: nemotron_nano_llm
+    exclude_tools:
+      - advanced_web_search_tool
+      # SCG 2026-09-07 (decision 8, Wayne: 'use the models for their intended purpose'): the quick path
+      # answers from the verified knowledge base only, like MR-01's direct lane. Measured before this:
+      # ~1 corpus question in 3 went web-first and answered from a random page (a 2016 blog on 08-31, a
+      # Canadian retailer today) regardless of source ranking. Web research stays on the deep path.
+      - web_search_tool
+    verbose: true
+    max_llm_turns: 24
+    max_tool_iterations: 14
+    enforce_citations: true
+
+  deep_research_agent:
+    _type: deep_research_agent
+    enable_citation_verification: true
+    orchestrator_llm: gpt_oss_llm
+    source_router_llm: nemotron_nano_llm
+    researcher_llm: nemotron_nano_llm
+    planner_llm: gpt_oss_llm
+    writer_llm: nemotron_nano_llm
+    exclude_tools:
+      - web_search_tool
+    verbose: true
+
+workflow:
+  _type: chat_deepresearcher_agent
+  verbose: true
+  enable_escalation: true
+  # SCG 2026-08-02: DISABLED. The clarifier tries to ask the USER a clarifying question; in an
+  # API/headless deployment there is no human callback registered, so it raises NotImplementedError
+  # and the whole /chat request 500s. Correct for interactive UI use, fatal for programmatic use.
+  enable_clarifier: false
+  use_async_deep_research: true
+  checkpoint_db: ${AIQ_CHECKPOINT_DB:-./checkpoints.db}
