@@ -40,6 +40,9 @@ services:
     environment:
       - APP_ENV=${APP_ENV:-production}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # SCG 2026-08-29: the 24h default TTL reaper deletes any standing collection; the
+      # mr01_lens is permanent knowledge, not a job artifact. 876000h = 100 years.
+      - AIQ_COLLECTION_TTL_HOURS=${AIQ_COLLECTION_TTL_HOURS:-876000}
       # Database config (with Docker defaults)
       - NAT_JOB_STORE_DB_URL=${NAT_JOB_STORE_DB_URL:-postgresql+asyncpg://aiq:aiq_dev@postgres:5432/aiq_jobs}
       - AIQ_CHECKPOINT_DB=${AIQ_CHECKPOINT_DB:-postgresql://aiq:aiq_dev@postgres:5432/aiq_checkpoints}
@@ -73,7 +76,9 @@ services:
       # Optional (default true): set to "false" to let workers exit gracefully without respawning
       # - DASK_LIFETIME_RESTART=${DASK_LIFETIME_RESTART:-}
     ports:
-      - "${PORT:-8000}:8000"
+      # SCG 2026-09-06: loopback only. The charter guard shim (tools/aiq/chat_guard.py, :8001) is the
+      # only off-box way in; on-box callers keep using localhost:8000. Revert: drop the 127.0.0.1: prefix.
+      - "127.0.0.1:${PORT:-8000}:8000"
     volumes:
       - ../../configs:/app/configs:ro
       - aiq-data:/app/data
