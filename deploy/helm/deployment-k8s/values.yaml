@@ -23,6 +23,8 @@ aiq:
     autoMount: true
     refreshInterval: 5m
     dataFrom: []
+  bootstrap:
+    createPostgresInitConfigMap: true
   apps:
     backend:
       enabled: true
@@ -35,7 +37,7 @@ aiq:
         targetMemoryUtilizationPercentage: 80
       image:
         repository: nvcr.io/nvidia/blueprint/aiq-agent
-        tag: "2.0.0"
+        tag: "2.2.1"
         pullPolicy: IfNotPresent
       imagePullSecrets: []
       service:
@@ -47,7 +49,7 @@ aiq:
         enabled: true
         livenessProbe:
           httpGet:
-            path: /health
+            path: /live
             port: 8000
           initialDelaySeconds: 30
           periodSeconds: 15
@@ -74,6 +76,12 @@ aiq:
         CONFIG_FILE: configs/config_web_default_llamaindex.yml
         DASK_NWORKERS: '1'
         DASK_NTHREADS: '4'
+        # Optional: bound per-worker memory; Dask spills/restarts above this
+        # DASK_MEMORY_LIMIT: '800MB'
+        # Optional: recycle workers every N seconds to drop accumulated state
+        # DASK_LIFETIME: '3600'
+        # Optional (default 'true'): set to 'false' for graceful exit without respawn
+        # DASK_LIFETIME_RESTART: 'true'
         NAT_JOB_STORE_DB_URL: postgresql+asyncpg://$(DB_USER_NAME):$(DB_USER_PASSWORD)@aiq-postgres:5432/aiq_jobs
         AIQ_CHECKPOINT_DB: postgresql://$(DB_USER_NAME):$(DB_USER_PASSWORD)@aiq-postgres:5432/aiq_jobs
         AIQ_SUMMARY_DB: postgresql+asyncpg://$(DB_USER_NAME):$(DB_USER_PASSWORD)@aiq-postgres:5432/aiq_jobs
@@ -82,6 +90,15 @@ aiq:
         COLLECTION_NAME: default_collection
         AIQ_CHROMA_DIR: /app/data/chroma
         MODE: web
+        # Upload validation (keep aligned with the frontend)
+        FILE_UPLOAD_ACCEPTED_TYPES: .pdf,.docx,.txt,.md
+        FILE_UPLOAD_MAX_SIZE_MB: '100'
+        FILE_UPLOAD_MAX_FILE_COUNT: '10'
+        # Default-on deep-research admission control
+        AIQ_MAX_DEEP_RESEARCH_INPUT_CHARS: '32768'
+        AIQ_MAX_ACTIVE_DEEP_RESEARCH_JOBS_PER_PRINCIPAL: '5'
+        AIQ_MAX_ACTIVE_DEEP_RESEARCH_JOBS_GLOBAL: '50'
+        AIQ_MAX_DEEP_RESEARCH_SUBMISSIONS_PER_MINUTE: '20'
       labels:
         component: backend
       route:
@@ -133,6 +150,7 @@ aiq:
         repository: bitnami/postgresql
         tag: latest
         pullPolicy: IfNotPresent
+      imagePullSecrets: []
       service:
         type: ClusterIP
         ports:
@@ -148,34 +166,9 @@ aiq:
         POSTGRES_PASSWORD: DB_USER_PASSWORD
       env:
         POSTGRES_DB: aiq_jobs
-      configMaps:
-      - name: aiq-postgres-init
-        data:
-          init.sql: "-- =============================================================================\n\
-            -- AI-Q - Database Initialization\n-- This script runs on first PostgreSQL\
-            \ startup (fresh volume only)\n-- =============================================================================\n\
-            --\n-- What this script handles (requires admin privileges):\n--   - Creating\
-            \ databases (aiq_checkpoints)\n--   - Granting permissions\n--   - Creating\
-            \ NAT JobStore table (job_info)\n--   - Creating performance indices\n\
-            --\n-- What the app handles automatically:\n--   - job_events table (event_store.py\
-            \ creates via SQLAlchemy)\n--   - LangGraph checkpoint tables (AsyncPostgresSaver\
-            \ creates them)\n--   - summaries table (summary_store.py creates if not\
-            \ exists)\n--\n-- =============================================================================\n\
-            \n-- Create checkpoints database for LangGraph agent state\nCREATE DATABASE\
-            \ aiq_checkpoints;\n\n-- Grant permissions\nGRANT ALL PRIVILEGES ON DATABASE\
-            \ aiq_jobs TO :\"db_user\";\nGRANT ALL PRIVILEGES ON DATABASE aiq_checkpoints\
-            \ TO :\"db_user\";\n\n-- =============================================================================\n\
-            -- Create job store table in aiq_jobs database\n-- Note: job_events table\
-            \ is created by the app (event_store.py)\n-- =============================================================================\n\
-            \\connect aiq_jobs\n\n-- Job metadata table (NAT JobStore - not auto-created\
-            \ by NAT)\nCREATE TABLE IF NOT EXISTS job_info (\n    job_id VARCHAR PRIMARY\
-            \ KEY,\n    status VARCHAR NOT NULL,\n    config_file VARCHAR,\n    error\
-            \ VARCHAR,\n    output_path VARCHAR,\n    created_at TIMESTAMP WITH TIME\
-            \ ZONE,\n    updated_at TIMESTAMP WITH TIME ZONE,\n    expiry_seconds\
-            \ INTEGER,\n    output VARCHAR,\n    is_expired BOOLEAN DEFAULT FALSE\n\
-            );\n\n-- Performance indices\nCREATE INDEX IF NOT EXISTS idx_job_info_status\
-            \ ON job_info(status);\nCREATE INDEX IF NOT EXISTS idx_job_info_created_at\
-            \ ON job_info(created_at);\n"
+        POSTGRESQL_MAX_CONNECTIONS: '200'
+      # ConfigMap for init.sql is managed by postgres-init-configmap.yaml template
+      # which reads from files/init-db.sql (source of truth: deploy/compose/init-db.sql)
       persistence:
       - name: aiq-postgres-data
         accessModes:
@@ -222,7 +215,7 @@ aiq:
         targetCPUUtilizationPercentage: 80
       image:
         repository: nvcr.io/nvidia/blueprint/aiq-frontend
-        tag: "2.0.0"
+        tag: "2.2.1"
         pullPolicy: IfNotPresent
       imagePullSecrets: []
       service:

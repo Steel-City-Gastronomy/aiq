@@ -15,27 +15,52 @@ The AI-Q blueprint supports multiple observability backends for tracing agent ex
 | [OpenTelemetry Collector](#opentelemetry-collector) | Production infrastructure, enterprise redaction | YAML config with OTEL endpoint |
 | [Verbose Logging](#verbose-logging) | Quick debugging, no external services | CLI flag or YAML config |
 
+## Async Deep Research Trace Hierarchy
+
+NAT-exported traces from the async job runner preserve the DeepAgents execution
+hierarchy instead of flattening named agents beside their task and model spans. The root
+workflow span uses the configured function name. A `task` tool is labeled with its
+subagent type, and each outer DeepAgents chain receives a distinct named-agent span:
+
+```text
+deep_research_agent
+├── task: planner-agent
+│   └── planner-agent
+│       └── model
+└── run_research_batch
+    ├── researcher-agent
+    │   └── model
+    └── researcher-agent
+        └── model
+```
+
+Parallel researchers remain separate children of the shared batch span. Structural
+agent spans include `agent_id`, `agent_name`, and `span_role=agent`; start metadata also
+records the LangChain parent run ID, and an error close records only the exception class
+as `error_type`. These structural spans deliberately omit LangGraph input/output state so
+they do not duplicate prompts or results. LLM and tool spans can still contain application
+content, so configure the selected exporter's redaction controls for the deployment's
+privacy requirements.
+
+This hierarchy describes NAT-exported async-job telemetry. Third-party tracing SDKs that
+instrument LangChain directly can present a different tree.
+
 ## Phoenix
 
 [Phoenix](https://docs.arize.com/phoenix) provides a local UI for visualizing traces, inspecting LLM calls, and analyzing token usage and latency. It is the recommended backend for local development.
 
 ### Setup
 
-1. Install Phoenix:
+1. Start Phoenix in an isolated `uvx` environment. This installs `arize-phoenix` outside the AI-Q project environment
+   on the first run:
 
    ```bash
-   uv pip install arize-phoenix
-   ```
-
-2. Start the Phoenix server:
-
-   ```bash
-   python -m phoenix.server.main serve
+   uvx --from arize-phoenix phoenix serve
    ```
 
    This launches the Phoenix UI at [http://localhost:6006](http://localhost:6006).
 
-3. Enable Phoenix tracing in your YAML config:
+2. Enable Phoenix tracing in your YAML config:
 
    ```yaml
    general:
@@ -84,13 +109,25 @@ The AI-Q blueprint supports multiple observability backends for tracing agent ex
 
 ## Weights & Biases Weave
 
-[Weave](https://wandb.ai/site/weave) provides experiment tracking and trace logging integrated with the Weights & Biases platform. NAT includes Weave support via the `weave` extra (`nvidia-nat[weave]`), which is already installed in this project.
+[Weave](https://wandb.ai/site/weave) provides experiment tracking and trace
+logging integrated with the Weights & Biases platform. Weave support is an
+optional NAT extra and is not installed by default.
 
 ### Setup
 
-1. Create a [Weights & Biases](https://wandb.ai/) account if you do not have one.
+1. Install the exporter into your local environment:
 
-2. Set the API key in `deploy/.env`:
+   ```bash
+   uv pip install "nvidia-nat[weave]==1.8.0"
+   ```
+
+   For production or container deployments, add this exact pinned dependency
+   to the image build and rebuild the image. Installing it into a running
+   container is not a durable deployment.
+
+2. Create a [Weights & Biases](https://wandb.ai/) account if you do not have one.
+
+3. Set the API key in `deploy/.env`:
 
    ```bash
    WANDB_API_KEY=your-wandb-api-key
@@ -102,7 +139,7 @@ The AI-Q blueprint supports multiple observability backends for tracing agent ex
    wandb login
    ```
 
-3. Enable Weave tracing in your YAML config:
+4. Enable Weave tracing in your YAML config:
 
    ```yaml
    general:
@@ -206,6 +243,37 @@ general:
 | `redaction_headers` | Request headers checked to determine whether to redact. |
 | `resource_attributes` | Custom OTEL resource attributes attached to all spans. |
 
+### Request Tags on NAT Spans
+
+When the `aiq_api` auth middleware is enabled, NAT-exported workflow spans can
+include low-cardinality request tags plus optional pseudonymous identity tags.
+These tags are propagated across HTTP requests, WebSocket workflows, and async
+job execution.
+
+Always-on NAT span tags:
+
+- `nat.aiq.caller.type` -- resolved caller type from auth middleware
+- `nat.aiq.auth.transport` -- `bearer`, `cookie`, or `none`
+- `nat.aiq.auth.verified` -- whether the request resolved to a verified principal
+- `nat.aiq.access.channel` -- inferred request channel or trusted explicit access-channel header
+
+Optional pseudonymous tags:
+
+- `nat.enduser.id`, `nat.aiq.user.id`, `nat.aiq.auth.type` -- controlled by `AIQ_TRACE_USER_IDENTITY_MODE`
+- `nat.aiq.user.email`, `nat.aiq.user.name` -- added only in `full` mode
+- `nat.aiq.client.id` -- controlled by `AIQ_TRACE_CLIENT_ID_MODE=ip`
+
+Environment variables:
+
+- `AIQ_TRACE_USER_IDENTITY_MODE=none|id|full`
+- `AIQ_TRACE_USER_IDENTITY_HMAC_SECRET=<secret>`
+- `AIQ_TRACE_CLIENT_ID_MODE=none|ip`
+- `AIQ_TRACE_CLIENT_ID_HMAC_SECRET=<secret>`
+- `AIQ_TRACE_CLIENT_IP_HEADERS=x-real-ip,x-forwarded-for`
+
+The `id` and `ip` modes emit HMAC-derived pseudonymous identifiers rather than
+raw subjects or raw IP addresses.
+
 ### Batch Configuration
 
 The exporter supports standard OTEL batch settings:
@@ -226,7 +294,11 @@ general:
 
 ## Verbose Logging
 
-For quick debugging without any external services, enable the built-in verbose callback logger. This prints detailed agent execution information directly to the console.
+For quick debugging without any external services, enable the built-in `VerboseTraceCallback` logger. This callback
+records execution metadata directly to the console without printing raw prompts, tool arguments, tool results, or
+model responses. This metadata-only guarantee applies only to `VerboseTraceCallback`. Phoenix and other exporters,
+enabled source adapters, and external providers can still receive or retain raw prompts, tool arguments, tool results,
+and model responses; configure and audit their redaction, retention, and access controls independently.
 
 ### Enable via CLI
 
@@ -245,6 +317,6 @@ workflow:
 ### What Gets Logged
 
 - Chain starts and completions (orchestrator routing, agent handoffs)
-- LLM invocations with model name and token counts
-- Tool calls with arguments and return values
-- Reasoning content for frontier models that support it
+- LLM invocation metadata, such as model and message counts when available
+- Tool names and execution metadata
+- Content lengths and redaction markers instead of raw request or response content

@@ -18,18 +18,18 @@
 #   BUILD_TARGET=release docker compose --env-file ../.env -f docker-compose.yaml up -d --build
 #
 #   # Use pre-built images from registry (skip --build)
-#   BACKEND_IMAGE=nvcr.io/nvidia/blueprint/aiq-agent:2.0.0 \
-#   FRONTEND_IMAGE=nvcr.io/nvidia/blueprint/aiq-frontend:2.0.0 \
+#   BACKEND_IMAGE=nvcr.io/nvidia/blueprint/aiq-agent:2.2.1 \
+#   FRONTEND_IMAGE=nvcr.io/nvidia/blueprint/aiq-frontend:2.2.1 \
 #   docker compose --env-file ../.env -f docker-compose.yaml up -d
 #
 # Frontend image:
-#   The frontend is built from frontends/ui/Dockerfile.
+#   The frontend is built from frontends/ui/deploy/Dockerfile.
 #
 # =============================================================================
 
 services:
   aiq-agent:
-    image: ${BACKEND_IMAGE:-nvcr.io/nvidia/blueprint/aiq-agent:2.0.0}
+    image: ${BACKEND_IMAGE:-nvcr.io/nvidia/blueprint/aiq-agent:2.2.1}
     build:
       context: ../..
       dockerfile: deploy/Dockerfile
@@ -40,6 +40,9 @@ services:
     environment:
       - APP_ENV=${APP_ENV:-production}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # SCG 2026-08-29: the 24h default TTL reaper deletes any standing collection; the
+      # mr01_lens is permanent knowledge, not a job artifact. 876000h = 100 years.
+      - AIQ_COLLECTION_TTL_HOURS=${AIQ_COLLECTION_TTL_HOURS:-876000}
       # Database config (with Docker defaults)
       - NAT_JOB_STORE_DB_URL=${NAT_JOB_STORE_DB_URL:-postgresql+asyncpg://aiq:aiq_dev@postgres:5432/aiq_jobs}
       - AIQ_CHECKPOINT_DB=${AIQ_CHECKPOINT_DB:-postgresql://aiq:aiq_dev@postgres:5432/aiq_checkpoints}
@@ -51,14 +54,31 @@ services:
       - CONFIG_FILE=${BACKEND_CONFIG:-/app/configs/config_web_default_llamaindex.yml}
       - HOST=0.0.0.0
       - PORT=8000
+      # Upload validation (keep aligned with the frontend)
+      - FILE_UPLOAD_ACCEPTED_TYPES=${FILE_UPLOAD_ACCEPTED_TYPES:-.pdf,.docx,.txt,.md}
+      - FILE_UPLOAD_MAX_SIZE_MB=${FILE_UPLOAD_MAX_SIZE_MB:-100}
+      - FILE_UPLOAD_MAX_FILE_COUNT=${FILE_UPLOAD_MAX_FILE_COUNT:-10}
+      # Default-on deep-research admission control
+      - AIQ_MAX_DEEP_RESEARCH_INPUT_CHARS=${AIQ_MAX_DEEP_RESEARCH_INPUT_CHARS:-32768}
+      - AIQ_MAX_ACTIVE_DEEP_RESEARCH_JOBS_PER_PRINCIPAL=${AIQ_MAX_ACTIVE_DEEP_RESEARCH_JOBS_PER_PRINCIPAL:-5}
+      - AIQ_MAX_ACTIVE_DEEP_RESEARCH_JOBS_GLOBAL=${AIQ_MAX_ACTIVE_DEEP_RESEARCH_JOBS_GLOBAL:-50}
+      - AIQ_MAX_DEEP_RESEARCH_SUBMISSIONS_PER_MINUTE=${AIQ_MAX_DEEP_RESEARCH_SUBMISSIONS_PER_MINUTE:-20}
       # RAG config
       # - RAG_SERVER_URL=${RAG_SERVER_URL:-https://rag-backend}
       # - RAG_INGEST_URL=${RAG_INGEST_URL:-https://rag-ingest}
       # Dask worker config
       - DASK_NWORKERS=${DASK_NWORKERS:-1}
       - DASK_NTHREADS=${DASK_NTHREADS:-4}
+      # Optional: bound per-worker memory (Dask spills/restarts above this)
+      # - DASK_MEMORY_LIMIT=${DASK_MEMORY_LIMIT:-}
+      # Optional: recycle workers after this many seconds to drop accumulated state
+      # - DASK_LIFETIME=${DASK_LIFETIME:-}
+      # Optional (default true): set to "false" to let workers exit gracefully without respawning
+      # - DASK_LIFETIME_RESTART=${DASK_LIFETIME_RESTART:-}
     ports:
-      - "${PORT:-8000}:8000"
+      # SCG 2026-09-06: loopback only. The charter guard shim (tools/aiq/chat_guard.py, :8001) is the
+      # only off-box way in; on-box callers keep using localhost:8000. Revert: drop the 127.0.0.1: prefix.
+      - "127.0.0.1:${PORT:-8000}:8000"
     volumes:
       - ../../configs:/app/configs:ro
       - aiq-data:/app/data
@@ -70,7 +90,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: ${FRONTEND_IMAGE:-nvcr.io/nvidia/blueprint/aiq-frontend:2.0.0}
+    image: ${FRONTEND_IMAGE:-nvcr.io/nvidia/blueprint/aiq-frontend:2.2.1}
     build:
       context: ../../frontends/ui
       dockerfile: deploy/Dockerfile
@@ -79,8 +99,8 @@ services:
       - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
       - BACKEND_URL=${BACKEND_URL:-http://aiq-agent:8000}
       - FILE_UPLOAD_ACCEPTED_TYPES=${FILE_UPLOAD_ACCEPTED_TYPES:-.pdf,.docx,.txt,.md}
-      - FILE_UPLOAD_MAX_SIZE_MB=${FILE_UPLOAD_MAX_SIZE_MB:-}
-      - FILE_UPLOAD_MAX_FILE_COUNT=${FILE_UPLOAD_MAX_FILE_COUNT:-}
+      - FILE_UPLOAD_MAX_SIZE_MB=${FILE_UPLOAD_MAX_SIZE_MB:-100}
+      - FILE_UPLOAD_MAX_FILE_COUNT=${FILE_UPLOAD_MAX_FILE_COUNT:-10}
       - FILE_EXPIRATION_CHECK_INTERVAL_HOURS=${FILE_EXPIRATION_CHECK_INTERVAL_HOURS:-}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
@@ -134,7 +154,6 @@ volumes:
     driver: local
   postgres-data:
     driver: local
-
 networks:
   aiq-network:
     driver: bridge

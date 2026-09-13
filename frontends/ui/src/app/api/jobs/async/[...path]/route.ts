@@ -43,18 +43,54 @@ const buildBackendUrl = (path: string[]): string => {
 }
 
 /**
- * Get auth headers from request, including idToken cookie
- * Returns empty object when REQUIRE_AUTH=false to prevent user identification
+ * Forward a non-2xx backend response to the browser.
+ *
+ * If the backend returned a JSON body (e.g. the 409 `mcp_auth_required` payload
+ * with its `sources`/`auth_url` details), pass it through verbatim with the
+ * original status so the client can act on the structure. Only fall back to the
+ * BACKEND_ERROR envelope for non-JSON error bodies, where there is nothing
+ * structured to preserve.
  */
-const getAuthHeaders = async (req: Request): Promise<Record<string, string>> => {
+const forwardBackendError = (status: number, errorText: string): NextResponse => {
+  try {
+    const parsed = JSON.parse(errorText)
+    return NextResponse.json(parsed, { status })
+  } catch {
+    return NextResponse.json(
+      { error: { code: 'BACKEND_ERROR', message: `Backend returned ${status}: ${errorText}` } },
+      { status }
+    )
+  }
+}
+
+/**
+ * Get auth headers from request, including idToken cookie.
+ * Returns empty object when REQUIRE_AUTH=false to prevent user identification.
+ *
+ * For SSE stream paths, accepts a ?token= query parameter as a fallback
+ * because EventSource cannot set custom headers or cookies.
+ */
+const getAuthHeaders = async (req: Request, pathSegments: string[]): Promise<Record<string, string>> => {
   // Skip auth when REQUIRE_AUTH=false - don't forward any auth info to backend
   if (!isAuthRequired()) {
     return {}
   }
 
-  const authToken = req.headers.get('Authorization')
+  // Only allow query token for stream paths (EventSource can't set headers).
+  // Note: tokens in URLs may appear in server access logs. This is a
+  // server-side route handler — the token is extracted here and forwarded
+  // only via headers, never passed on as a URL to the backend.
+  const allowQueryToken = pathSegments.includes('stream')
+  const rawQueryToken = new URL(req.url).searchParams.get('token')?.trim()
+  const queryToken = allowQueryToken && rawQueryToken ? rawQueryToken : undefined
   const cookieStore = await cookies()
-  const idToken = cookieStore.get('idToken')?.value
+  const cookieIdToken = cookieStore.get('idToken')?.value?.trim()
+  const idToken = cookieIdToken || queryToken
+  const authToken = req.headers.get('Authorization') || (idToken ? `Bearer ${idToken}` : null)
+
+  if (queryToken && !cookieIdToken) {
+    console.warn('[Deep Research API] SSE stream using ?token= query fallback (idToken cookie missing)')
+  }
 
   return {
     ...(authToken ? { Authorization: authToken } : {}),
@@ -74,39 +110,35 @@ export async function GET(
     const { path } = await params
     const backendUrl = buildBackendUrl(path)
     const isStreamRequest = path.includes('stream')
+    // Artifact bytes (.../artifacts/{id}/content) are binary — never JSON-parse them.
+    const isArtifactContent = path.includes('artifacts') && path[path.length - 1] === 'content'
 
     console.log('[Deep Research API] GET:', backendUrl, isStreamRequest ? '(SSE)' : '')
 
     // Get auth headers (includes idToken cookie)
-    const authHeaders = await getAuthHeaders(req)
+    const authHeaders = await getAuthHeaders(req, path)
     console.log('[Deep Research API] idToken cookie present:', !!authHeaders.Cookie)
 
     // Forward the request to the backend
+    const acceptHeader = isStreamRequest
+      ? 'text/event-stream'
+      : isArtifactContent
+        ? '*/*'
+        : 'application/json'
     const response = await fetch(backendUrl, {
       method: 'GET',
       headers: {
         ...authHeaders,
-        Accept: isStreamRequest ? 'text/event-stream' : 'application/json',
+        Accept: acceptHeader,
       },
+      ...(isStreamRequest ? { signal: req.signal } : {}),
     })
 
     // Handle error responses
     if (!response.ok) {
       const errorText = await response.text()
       console.error('[Deep Research API] Backend error:', response.status, errorText)
-
-      return new NextResponse(
-        JSON.stringify({
-          error: {
-            code: 'BACKEND_ERROR',
-            message: `Backend returned ${response.status}: ${errorText}`,
-          },
-        }),
-        {
-          status: response.status,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      )
+      return forwardBackendError(response.status, errorText)
     }
 
     // For SSE streams, pass through the response body
@@ -136,6 +168,26 @@ export async function GET(
           'X-Accel-Buffering': 'no', // Disable nginx buffering
         },
       })
+    }
+
+    // For artifact content, stream the raw bytes through with the upstream content type
+    // (JSON-parsing here would corrupt binary payloads like PNGs).
+    if (isArtifactContent) {
+      if (!response.body) {
+        return new NextResponse(
+          JSON.stringify({
+            error: { code: 'NO_RESPONSE_BODY', message: 'Backend returned no artifact content' },
+          }),
+          { status: 502, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+      const passthroughHeaders: Record<string, string> = {
+        'Content-Type': response.headers.get('Content-Type') ?? 'application/octet-stream',
+        'Cache-Control': 'private, max-age=3600',
+      }
+      const disposition = response.headers.get('Content-Disposition')
+      if (disposition) passthroughHeaders['Content-Disposition'] = disposition
+      return new NextResponse(response.body, { status: response.status, headers: passthroughHeaders })
     }
 
     // For regular JSON responses
@@ -185,7 +237,7 @@ export async function POST(
     }
 
     // Get auth headers (includes idToken cookie)
-    const authHeaders = await getAuthHeaders(req)
+    const authHeaders = await getAuthHeaders(req, path)
     console.log('[Deep Research API] POST idToken cookie present:', !!authHeaders.Cookie)
 
     // Forward the request to the backend
@@ -202,19 +254,7 @@ export async function POST(
     if (!response.ok) {
       const errorText = await response.text()
       console.error('[Deep Research API] Backend error:', response.status, errorText)
-
-      return new NextResponse(
-        JSON.stringify({
-          error: {
-            code: 'BACKEND_ERROR',
-            message: `Backend returned ${response.status}: ${errorText}`,
-          },
-        }),
-        {
-          status: response.status,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      )
+      return forwardBackendError(response.status, errorText)
     }
 
     // Return JSON response

@@ -193,7 +193,7 @@ The lazy loading is automatic and seamless - you don't need to do anything speci
 From the **UI directory** (`frontends/ui/`):
 
 ```bash
-docker build -t aiq-blueprint-ui:latest .
+docker build -f deploy/Dockerfile -t aiq-blueprint-ui:latest .
 ```
 
 ### Run
@@ -298,7 +298,7 @@ All environment variables are **runtime configurable** - no container rebuild ne
 | `NEXTAUTH_SECRET` | - | Session encryption secret (required if auth enabled) |
 | `NEXTAUTH_URL` | - | Public URL where app is hosted (required if auth enabled) |
 | `SESSION_MAX_AGE_HOURS` | `24` | Session and idToken cookie lifetime in hours |
-| `TOKEN_REFRESH_BUFFER_MINUTES` | `5` | Minutes before token expiry to trigger refresh (set to 30 for long-running jobs) |
+| `TOKEN_REFRESH_BUFFER_MINUTES` | `15` | Minutes before token expiry to trigger refresh (set to 30 for long-running jobs) |
 
 > **Cookie Security:** `NEXTAUTH_URL` determines cookie security:
 > - `http://...` -> non-secure cookies (local dev over HTTP)

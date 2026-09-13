@@ -83,7 +83,7 @@ the agent-tools round trips plus headroom.
 | Field | Type | Default | Description |
 | ----- | ---- | ------- | ----------- |
 | `messages` | `Annotated[list[AnyMessage], add_messages]` | required | Conversation history with LangGraph message reducer |
-| `data_sources` | `list[str]` or `None` | `None` | User-selected data source IDs for tool filtering |
+| `data_sources` | `list[str]` or `None` | `None` | User-selected data source IDs for tool filtering. `None` uses all configured tools; `[]` keeps only unmapped utility tools; a populated list scopes to the named sources plus unmapped utility tools. |
 | `user_info` | `dict` or `None` | `None` | User information for prompt personalization |
 | `tools_info` | `list[dict]` or `None` | `None` | Override tools info (used when data_sources filters tools) |
 | `available_documents` | `list[AvailableDocument]` or `None` | `None` | User-uploaded documents with summaries |
@@ -100,6 +100,7 @@ Configured through `ShallowResearchAgentConfig` (NeMo Agent Toolkit type name: `
 | `tools` | `list[FunctionRef \| FunctionGroupRef]` | `[]` | Tools available for research (web search, document search, etc.) |
 | `max_llm_turns` | `int` | `10` | Maximum LLM interaction turns |
 | `max_tool_iterations` | `int` | `5` | Maximum tool calls before forcing synthesis |
+| `enforce_citations` | `bool` | `false` | Fail instead of returning a sanitized generated answer when citation integrity cannot be preserved |
 | `verbose` | `bool` | `false` | Enable verbose logging |
 
 **Example YAML:**
@@ -113,6 +114,7 @@ functions:
       - web_search_tool
     max_llm_turns: 10
     max_tool_iterations: 5
+    enforce_citations: false
     verbose: true
 ```
 

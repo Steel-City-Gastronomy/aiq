@@ -9,6 +9,12 @@ The complete AI-Q blueprint configuration using **LlamaIndex + ChromaDB** for kn
 
 This is based on `configs/config_web_default_llamaindex.yml`.
 
+```{note}
+This example preserves the shipped Lightning shallow profile. The NVIDIA API Catalog serving profile has a known
+[shallow citation-output limitation](../resources/troubleshooting.md#nemotron-35-lightning-on-nvidia-api-catalog).
+AI-Q fails closed rather than publishing citation-incomplete drafts.
+```
+
 ## Configuration
 
 ```yaml
@@ -43,49 +49,64 @@ general:
 # LLMs
 # ===========================================================================
 llms:
-  nemotron_llm_intent:
+  nemotron_lightning_intent_llm:
     _type: nim
-    model_name: nvidia/nemotron-3-nano-30b-a3b
+    model_name: nvidia/nemotron-3.5-lightning-30b-a3b
     base_url: "https://integrate.api.nvidia.com/v1"
-    temperature: 0.5
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.1
     top_p: 0.9
-    max_tokens: 4096
+    max_tokens: 1024
     num_retries: 5
+    parallel_tool_calls: false
+    chat_template_kwargs:
+      enable_thinking: false
+
+  nemotron_lightning_agent_llm:
+    _type: nim
+    model_name: nvidia/nemotron-3.5-lightning-30b-a3b
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    top_p: 0.7
+    max_tokens: 8192
+    num_retries: 5
+    parallel_tool_calls: false
     chat_template_kwargs:
       enable_thinking: true
 
-  nemotron_nano_llm:
+  # LLM for clarification and deep-research roles
+  nemotron_ultra_llm:
     _type: nim
-    model_name: nvidia/nemotron-3-nano-30b-a3b
+    model_name: nvidia/nemotron-3-ultra-550b-a55b
     base_url: "https://integrate.api.nvidia.com/v1"
-    temperature: 0.1
-    top_p: 0.3
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    top_p: 0.7
     max_tokens: 16384
     num_retries: 5
     chat_template_kwargs:
-      enable_thinking: true
+      enable_thinking: false
 
-  # Nemotron Super is compatible and tested with AIQ but has limited availability
-  # on the Build API due to high demand.
-  # Uncomment nemotron_super_llm below if the endpoint is accessible.
-  # nemotron_super_llm:
-  #   _type: nim
-  #   model_name: nvidia/nemotron-3-super-120b-a12b
-  #   base_url: "https://integrate.api.nvidia.com/v1"
-  #   temperature: 1.0
-  #   top_p: 1.0
-  #   max_tokens: 128000
-  #   num_retries: 5
-  #   chat_template_kwargs:
-  #     enable_thinking: true
+  nemotron_ultra_writer_llm:
+    _type: nim
+    model_name: nvidia/nemotron-3-ultra-550b-a55b
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    top_p: 0.7
+    max_tokens: 32768
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: false
 
   # LLM for document summaries (shown in the UI after upload)
   summary_llm:
     _type: nim
-    model_name: nvidia/nemotron-mini-4b-instruct
+    model_name: google/gemma-4-31b-it
     base_url: "https://integrate.api.nvidia.com/v1"
     api_key: ${NVIDIA_API_KEY}
-    temperature: 0.3
+    temperature: 0.1
     max_tokens: 100
 
 # ===========================================================================
@@ -126,7 +147,7 @@ functions:
 
   intent_classifier:
     _type: intent_classifier
-    llm: nemotron_llm_intent
+    llm: nemotron_lightning_intent_llm
     verbose: true
     tools:
       - web_search_tool
@@ -135,19 +156,17 @@ functions:
 
   clarifier_agent:
     _type: clarifier_agent
-    llm: nemotron_nano_llm
-    planner_llm: nemotron_nano_llm
+    llm: nemotron_ultra_llm
     tools:
       - web_search_tool
       - knowledge_search
     max_turns: 3
-    enable_plan_approval: true
     log_response_max_chars: 2000
     verbose: true
 
   shallow_research_agent:
     _type: shallow_research_agent
-    llm: nemotron_nano_llm
+    llm: nemotron_lightning_agent_llm
     verbose: true
     tools:
       - web_search_tool
@@ -157,8 +176,11 @@ functions:
 
   deep_research_agent:
     _type: deep_research_agent
-    orchestrator_llm: nemotron_nano_llm  # replace with nemotron_super_llm if available
-    max_loops: 2
+    orchestrator_llm: nemotron_ultra_llm
+    source_router_llm: nemotron_ultra_llm
+    planner_llm: nemotron_ultra_llm
+    researcher_llm: nemotron_ultra_llm
+    writer_llm: nemotron_ultra_writer_llm
     verbose: true
     tools:
       # - paper_search_tool  # Uncomment if SERPER_API_KEY is set
@@ -224,11 +246,15 @@ curl -X POST http://localhost:8000/v1/collections/my-docs/documents \
 # Submit a query
 curl -X POST http://localhost:8000/v1/jobs/async/submit \
   -H "Content-Type: application/json" \
+  -H "conversation-id: my-docs" \
   -d '{"agent_type": "shallow_researcher", "input": "What is CUDA?"}'
 
 # Stream events
 curl -N http://localhost:8000/v1/jobs/async/job/{job_id}/stream
 ```
+
+The `conversation-id` header selects the collection used for retrieval. Keep it equal to the collection used in the
+upload path (`my-docs` in this example); without the header, retrieval uses the config's `collection_name` fallback.
 
 ## Key Differences from Foundational RAG
 

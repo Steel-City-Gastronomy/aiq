@@ -38,30 +38,87 @@ import logging
 import os
 import signal
 from collections.abc import Callable
-from typing import override
 
 from fastapi import APIRouter
 from fastapi import FastAPI
 from pydantic import Field
 
+from aiq_api.auth.middleware import AuthMiddleware
 from nat.builder.workflow_builder import WorkflowBuilder
 from nat.cli.register_workflow import register_front_end
-from nat.data_models.config import AIQConfig
+from nat.data_models.config import Config
 from nat.front_ends.fastapi.fastapi_front_end_config import FastApiFrontEndConfig
 from nat.front_ends.fastapi.fastapi_front_end_plugin import FastApiFrontEndPlugin
 from nat.front_ends.fastapi.fastapi_front_end_plugin_worker import FastApiFrontEndPluginWorker
 from nat.front_ends.fastapi.fastapi_front_end_plugin_worker import FastApiFrontEndPluginWorkerBase
+from nat.utils.type_utils import override
 
-from .jobs import EventStore
-from .jobs import get_connection_manager
+from .jobs.connection_manager import get_connection_manager
+from .jobs.event_store import EventStore
 from .routes.collections import add_collection_routes
 from .routes.documents import add_document_routes
 from .routes.jobs import register_job_routes
+from .websocket_reconnect import configure_websocket_auth
 from .websocket_reconnect import install_reconnectable_handler
 
 logger = logging.getLogger(__name__)
 
 install_reconnectable_handler()
+
+_DASK_LOOPBACK_DASHBOARD_ADDRESS = "127.0.0.1:8787"
+
+_validators: list = []
+
+
+def register_validator(validator) -> None:
+    """Register a token validator with the API server.
+
+    Call this before the server starts.  Validators are tried in order;
+    the first successful result wins.  At least one validator must be
+    registered when ``REQUIRE_AUTH=true``.
+
+    Example::
+
+        from aiq_api.plugin import register_validator
+        from mypackage.auth import MyCustomValidator
+        register_validator(MyCustomValidator(...))
+    """
+    _validators.append(validator)
+
+
+def _load_validators_from_entry_points() -> list:
+    """Discover validators registered via the ``aiq_api.validators`` entry-point group.
+
+    Any installed package can contribute validators by declaring an entry point
+    that returns a list of validator instances::
+
+        # pyproject.toml (in the internal / deployment package)
+        [project.entry-points."aiq_api.validators"]
+        my_provider = "mypackage.auth:get_validators"
+
+        # mypackage/auth.py
+        def get_validators() -> list:
+            return [MyValidator(...)]
+
+    This is the recommended way to add validators from a private package that
+    has the public aiq-api repo as a git submodule.
+    """
+    from importlib.metadata import entry_points
+
+    validators = []
+    for ep in entry_points(group="aiq_api.validators"):
+        try:
+            factory = ep.load()
+            result = factory()
+            validators.extend(result if isinstance(result, list) else [result])
+            logger.info(
+                "Loaded validators from entry point '%s': %s",
+                ep.name,
+                [type(v).__name__ for v in (result if isinstance(result, list) else [result])],
+            )
+        except Exception as e:
+            logger.warning("Failed to load validators from entry point '%s': %s", ep.name, e)
+    return validators
 
 
 class AIQAPIConfig(FastApiFrontEndConfig, name="aiq_api"):
@@ -151,11 +208,37 @@ class AIQAPIWorker(FastApiFrontEndPluginWorker):
         app.include_router(knowledge_router)
         logger.info("Knowledge API routes registered")
 
+        require_auth = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
+        validators = _validators + _load_validators_from_entry_points()
+        if require_auth and not validators:
+            raise RuntimeError(
+                "REQUIRE_AUTH=true but no validators have been registered. "
+                "Either call aiq_api.plugin.register_validator() before starting the server, "
+                "or declare an 'aiq_api.validators' entry point in your package."
+            )
+        app.add_middleware(AuthMiddleware, validators=validators, require_auth=require_auth)
+        configure_websocket_auth(validators=validators, require_auth=require_auth)
+        logger.info(
+            "AuthMiddleware registered (require_auth=%s, validators=%s)",
+            require_auth,
+            [type(v).__name__ for v in validators],
+        )
+
         return app
 
     @override
     async def add_routes(self, app: FastAPI, builder: WorkflowBuilder):
-        await super().add_routes(app, builder)
+        # NAT registers direct async-generation routes when Dask is available.
+        # Those routes submit straight to NAT's JobStore and therefore bypass
+        # AI-Q's admission and job-ownership controls.  Hide Dask availability
+        # only while NAT registers its routes, then restore it before adding the
+        # guarded AI-Q async job API below.
+        dask_available = self._dask_available
+        self._dask_available = False
+        try:
+            await super().add_routes(app, builder)
+        finally:
+            self._dask_available = dask_available
 
         # =====================================================================
         # Async Job API routes
@@ -181,13 +264,17 @@ class AIQAPIWorker(FastApiFrontEndPluginWorker):
 
             self._restore_signal_handlers()
 
-        try:
-            from aiq_debug import register_debug_routes
+        enable_debug = os.environ.get("AIQ_ENABLE_DEBUG", "true").lower() not in {"0", "false", "no", "off"}
+        if enable_debug:
+            try:
+                from aiq_debug import register_debug_routes
 
-            await register_debug_routes(app)
-            logger.info("Debug console registered at /debug")
-        except ImportError:
-            pass
+                await register_debug_routes(app)
+                logger.info("Debug console registered at /debug")
+            except ImportError:
+                pass
+        else:
+            logger.info("Debug console disabled by AIQ_ENABLE_DEBUG")
 
     def _install_signal_handlers(self):
         """Install signal handlers to notify SSE connections on shutdown."""
@@ -222,9 +309,46 @@ class AIQAPIWorker(FastApiFrontEndPluginWorker):
 class AIQAPIPlugin(FastApiFrontEndPlugin):
     """Plugin that adds unified AI-Q API endpoints to the FastAPI server."""
 
-    def __init__(self, full_config: AIQConfig, config: AIQAPIConfig):
+    def __init__(self, full_config: Config, config: AIQAPIConfig):
         super().__init__(full_config=full_config)
         self.config = config
+
+    @override
+    async def run(self) -> None:
+        if self.front_end_config.scheduler_address is not None:
+            await super().run()
+            return
+
+        # NAT 1.8 creates its LocalCluster directly and does not expose a
+        # dashboard-address hook.  Its pinned Dask default is ``:8787``, which
+        # binds the dashboard on every interface even though cluster RPC is
+        # loopback-only.  Inject the safer constructor default for NAT's one
+        # local-cluster creation without copying NAT's run implementation.
+        #
+        # Restore the module symbol inside the constructor wrapper, before
+        # LocalCluster starts, so the compatibility shim cannot affect clusters
+        # created later in the process.
+        try:
+            import dask.distributed as dask_distributed
+        except ImportError:
+            # Preserve NAT's optional-Dask behavior.
+            await super().run()
+            return
+
+        local_cluster_factory = dask_distributed.LocalCluster
+
+        def local_cluster_with_loopback_dashboard(*args, **kwargs):
+            if dask_distributed.LocalCluster is local_cluster_with_loopback_dashboard:
+                dask_distributed.LocalCluster = local_cluster_factory
+            kwargs.setdefault("dashboard_address", _DASK_LOOPBACK_DASHBOARD_ADDRESS)
+            return local_cluster_factory(*args, **kwargs)
+
+        dask_distributed.LocalCluster = local_cluster_with_loopback_dashboard
+        try:
+            await super().run()
+        finally:
+            if dask_distributed.LocalCluster is local_cluster_with_loopback_dashboard:
+                dask_distributed.LocalCluster = local_cluster_factory
 
     @override
     def get_worker_class(self) -> type[FastApiFrontEndPluginWorkerBase]:
@@ -232,6 +356,6 @@ class AIQAPIPlugin(FastApiFrontEndPlugin):
 
 
 @register_front_end(config_type=AIQAPIConfig)
-async def register_aiq_api(config: AIQAPIConfig, full_config: AIQConfig):
+async def register_aiq_api(config: AIQAPIConfig, full_config: Config):
     """Register unified AI-Q API with NAT framework."""
     yield AIQAPIPlugin(full_config=full_config, config=config)

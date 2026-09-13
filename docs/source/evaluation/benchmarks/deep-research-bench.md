@@ -19,6 +19,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ```bash
 export TAVILY_API_KEY=your_key              # For web search
+export SERPER_API_KEY=your_key              # For Google Scholar paper search
 export NVIDIA_API_KEY=your_key              # For agent execution (integrate.api.nvidia.com)
 export OPENAI_API_KEY=your_key              # For frontier model in config (optional)
 ```
@@ -65,8 +66,7 @@ If your config enables Phoenix tracing, start the Phoenix server before running 
 Start server (separate terminal):
 
 ```bash
-source .venv/bin/activate
-phoenix serve
+uvx --from arize-phoenix phoenix serve
 ```
 
 ## W&B Tracking

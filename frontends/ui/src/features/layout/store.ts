@@ -19,12 +19,11 @@ import type {
   ThemeMode,
 } from './types'
 import { createDataSourcesClient, type DataSourceFromAPI } from '@/adapters/api'
-import { WEB_SEARCH_SOURCE_ID } from './data-sources'
 
 const initialState: LayoutState = {
   isSessionsPanelOpen: false,
-  rightPanel: null,
-  researchPanelTab: 'plan',
+  rightPanel: 'data-sources',
+  researchPanelTab: 'tasks',
   dataSourcesPanelTab: 'connections',
   enabledDataSourceIds: [], // Start empty, populated when data sources are fetched
   theme: 'system',
@@ -89,10 +88,17 @@ export const useLayoutStore = create<LayoutStore>()(
           const client = createDataSourcesClient({ authToken })
           const response = await client.getDataSources()
 
-          // data_sources is already filtered (knowledge_layer removed) by the client
-          // Only enable web_search by default - user must manually enable other sources
+          // Start with every returned source enabled, EXCEPT protected per-user
+          // sources that aren't connected yet: enabling those would put an
+          // unusable source into the selection (shown in "Selected Data Sources"
+          // and submitted), which the card toggle and "Enable All" already refuse
+          // to do. The user connects such a source and then enables it. Auth-aware
+          // cleanup still runs through disableAuthRequiredSources on access loss.
           const enabledIds = response.data_sources
-            .filter((source) => source.id === WEB_SEARCH_SOURCE_ID)
+            .filter(
+              (source) =>
+                !(source.per_user_auth?.required && source.per_user_auth.status !== 'connected')
+            )
             .map((source) => source.id)
 
           set(
@@ -119,15 +125,52 @@ export const useLayoutStore = create<LayoutStore>()(
         }
       },
 
-      disableNonWebSources: () =>
+      refreshDataSourceStatus: async (authToken?: string) => {
+        // Selection-preserving refresh: update the source list/auth status without
+        // touching loading/error flags or resetting non-protected selections. The
+        // one exception is a protected source whose status is no longer
+        // 'connected' (e.g. the token expired since it was enabled) — it can no
+        // longer be used, so drop it from the selection here rather than leaving it
+        // shown in "Selected Data Sources" and submitted while unusable.
+        try {
+          const client = createDataSourcesClient({ authToken })
+          const response = await client.getDataSources()
+          set(
+            (state) => {
+              const stillUsable = new Set(
+                response.data_sources
+                  .filter((s) => !(s.per_user_auth?.required && s.per_user_auth.status !== 'connected'))
+                  .map((s) => s.id)
+              )
+              return {
+                availableDataSources: response.data_sources,
+                knowledgeLayerAvailable: response.knowledge_layer,
+                // Only ever removes now-unusable protected ids; other selections
+                // (incl. sources absent from this response) are preserved.
+                enabledDataSourceIds: state.enabledDataSourceIds.filter((id) => {
+                  const src = response.data_sources.find((s) => s.id === id)
+                  return !(src?.per_user_auth?.required) || stillUsable.has(id)
+                }),
+              }
+            },
+            false,
+            'refreshDataSourceStatus'
+          )
+        } catch {
+          // Best-effort: keep the previously loaded state on failure.
+        }
+      },
+
+      disableAuthRequiredSources: () =>
         set(
           (state) => ({
-            enabledDataSourceIds: state.enabledDataSourceIds.filter(
-              (id) => id === WEB_SEARCH_SOURCE_ID
-            ),
+            enabledDataSourceIds: state.enabledDataSourceIds.filter((id) => {
+              const source = state.availableDataSources?.find((s) => s.id === id)
+              return !source?.requires_auth
+            }),
           }),
           false,
-          'disableNonWebSources'
+          'disableAuthRequiredSources'
         ),
 
       setAvailableDataSources: (sources: DataSourceFromAPI[]) =>

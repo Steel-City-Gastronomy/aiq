@@ -27,6 +27,17 @@ from aiq_agent.knowledge import AvailableDocument
 from .depth import DepthDecision
 from .intent import IntentResult
 from .result import ShallowResult
+from .result import WorkflowOutcome
+
+
+def _keep_if_set(old: str | None, new: str | None) -> str | None:
+    """Reducer that keeps the prior value unless a new non-empty one is provided.
+
+    ``register.py`` builds a fresh state each turn, so a plain field would be clobbered to
+    None and never persist across turns. This lets ``last_report_markdown`` carry the
+    in-session report forward (and be overwritten when a newer report is produced).
+    """
+    return new if new else old
 
 
 class ChatResearcherState(BaseModel):
@@ -45,6 +56,11 @@ class ChatResearcherState(BaseModel):
         clarifier_result: Log from clarifier agent dialog.
         original_query: The latest user query, preserved for deep research.
         available_documents: User-uploaded documents with summaries for context.
+        skip_clarifier: When True the clarifier node is bypassed regardless of
+            ``enable_clarifier``.  Set automatically for API-key and anonymous
+            callers so headless workflows do not stall waiting for user input.
+        workflow_outcome: Explicit terminal workflow failure when a node
+            degrades an exception to fallback text; reset at each turn boundary.
     """
 
     messages: Annotated[list[AnyMessage], add_messages]
@@ -57,3 +73,9 @@ class ChatResearcherState(BaseModel):
     clarifier_result: str | None = None
     original_query: str | None = None
     available_documents: list[AvailableDocument] | None = None
+    skip_clarifier: bool = False
+    active_report_job_id: str | None = None
+    # The most recent report produced inline in this session (synchronous CLI mode), carried
+    # across turns by the keep-if-set reducer so report follow-up works without an async job.
+    last_report_markdown: Annotated[str | None, _keep_if_set] = None
+    workflow_outcome: WorkflowOutcome | None = None
