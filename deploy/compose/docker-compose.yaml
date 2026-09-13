@@ -79,7 +79,7 @@ services:
       - "${PORT:-8000}:8000"
     volumes:
       - ../../configs:/app/configs:ro
-      - aiq-data:/app/data
+      - /home/wayne1dgx/aiq-data:/app/data
     networks:
       - aiq-network
     depends_on:
