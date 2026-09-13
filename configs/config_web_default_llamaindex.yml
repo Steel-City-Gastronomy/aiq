@@ -87,6 +87,18 @@ llms:
     chat_template_kwargs:
       enable_thinking: false
 
+  nemotron_super_llm:
+    _type: nim
+    model_name: nvidia/nemotron-3-super-120b-a12b
+    base_url: "https://integrate.api.nvidia.com/v1"
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    top_p: 0.7
+    max_tokens: 16384
+    num_retries: 5
+    chat_template_kwargs:
+      enable_thinking: false
+
   nemotron_ultra_writer_llm:
     _type: nim
     model_name: nvidia/nemotron-3-ultra-550b-a55b
@@ -217,15 +229,21 @@ functions:
     verbose: true
     max_llm_turns: 10
     max_tool_iterations: 5
+    # SCG 2026-08-30 (Wayne): fail instead of returning an answer whose citations could not be
+    # verified. Measured before enabling: in one 50-query bench window this agent logged 25
+    # citation-integrity failures, 17 with verified_sources=0, and returned every one because
+    # this flag defaulted to False. A one-shot citation repair still runs first; this governs
+    # only what happens after repair fails.
+    enforce_citations: true
 
   deep_research_agent:
     _type: deep_research_agent
     enable_citation_verification: true
-    orchestrator_llm: nemotron_ultra_llm
-    source_router_llm: nemotron_ultra_llm
-    researcher_llm: nemotron_ultra_llm
-    planner_llm: nemotron_ultra_llm
-    writer_llm: nemotron_ultra_writer_llm
+    orchestrator_llm: nemotron_super_llm
+    source_router_llm: nemotron_super_llm
+    researcher_llm: nemotron_super_llm
+    planner_llm: nemotron_super_llm
+    writer_llm: nemotron_super_llm
     # tools: omitted -> inherits all from data_source_registry
     exclude_tools:                     # Remove basic variant; deep uses advanced_web_search_tool
       - web_search_tool
